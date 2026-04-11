@@ -9,4 +9,8 @@
 #SBATCH --mem=16G
 #SBATCH --account=mscbdtsuperpod
 
-python /home/ztanak/MSBD5003/k-means.py
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${PROJECT_ROOT}" || exit 1
+python "${PROJECT_ROOT}/src/k_means.py"
