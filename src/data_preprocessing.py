@@ -7,7 +7,14 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, hour
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+def get_project_root():
+    file_path = globals().get("__file__")
+    if file_path:
+        return Path(file_path).resolve().parent.parent
+    return Path("/Workspace/Users/theochengworkinginbox@gmail.com/Clustering_by_Spark")
+
+
+PROJECT_ROOT = get_project_root()
 DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_INPUT_PATH = "/Volumes/workspace/default/msbd5003_data/raw/train.csv"
 DEFAULT_OUTPUT_PATH = "/Volumes/workspace/default/msbd5003_data/processed/preprocessed_data_full"
