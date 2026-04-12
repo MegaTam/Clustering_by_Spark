@@ -1,10 +1,14 @@
+import argparse
 from pathlib import Path
 
 import numpy as np
+from pyspark.sql import Row
 from pyspark.sql import SparkSession
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_INPUT_PATH = "/Volumes/workspace/default/msbd5003_data/processed/preprocessed_data_full"
+DEFAULT_OUTPUT_PATH = "/Volumes/workspace/default/msbd5003_data/results/dbscan_clusters_parquet"
 
 
 def resolve_project_path(path_value):
@@ -12,6 +16,15 @@ def resolve_project_path(path_value):
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path
+
+
+def build_argument_parser():
+    parser = argparse.ArgumentParser(description="Run grid-based distributed DBSCAN on preprocessed data.")
+    parser.add_argument("--input", default=DEFAULT_INPUT_PATH, help="Path to the preprocessed Pickle RDD.")
+    parser.add_argument("--output", default=DEFAULT_OUTPUT_PATH, help="Directory for DBSCAN cluster assignments.")
+    parser.add_argument("--eps", type=float, default=0.02, help="Neighborhood radius in normalized space.")
+    parser.add_argument("--min-pts", type=int, default=10, help="Minimum points required to form a dense region.")
+    return parser
 
 
 # ==========================================
@@ -212,15 +225,25 @@ def run_distributed_dbscan(spark, data_path, eps=0.02, min_pts=10):
     return final_clusters_rdd
 
 
+def save_clusters(spark, cluster_rdd, output_path):
+    output_path = resolve_project_path(output_path)
+    cluster_df = spark.createDataFrame(
+        cluster_rdd.map(lambda x: Row(point_id=str(x[0]), cluster_id=str(x[1])))
+    )
+    cluster_df.write.mode("overwrite").parquet(str(output_path))
+    print(f">>> 已将 DBSCAN 聚类结果保存到: {output_path}")
+
+
 if __name__ == "__main__":
+    args = build_argument_parser().parse_args()
     spark = SparkSession.builder.appName("Grid_Distributed_DBSCAN").getOrCreate()
 
     # 这里的 eps 需要极其谨慎地调整，因为你的数据做了 Min-Max Scaling (范围在 0~1 之间)
     final_rdd = run_distributed_dbscan(
         spark,
-        data_path="data/preprocessed_data_test",
-        eps=0.02,
-        min_pts=10
+        data_path=args.input,
+        eps=args.eps,
+        min_pts=args.min_pts,
     )
 
     cluster_counts = final_rdd.map(lambda x: (x[1], 1)).reduceByKey(lambda a, b: a + b).collect()
@@ -230,4 +253,5 @@ if __name__ == "__main__":
     for cid, count in cluster_counts[:10]:
         print(f"Cluster ID: {cid}, 包含数据点: {count}")
 
+    save_clusters(spark, final_rdd, args.output)
     spark.stop()

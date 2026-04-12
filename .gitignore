@@ -5,9 +5,11 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+
 data/preprocessed_data_test/
 data/preprocessed_data_full/
 
+*.csv
 *.out
 *.err
 *.log

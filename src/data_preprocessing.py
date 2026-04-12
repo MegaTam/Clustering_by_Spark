@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 import shutil
 
@@ -8,6 +9,8 @@ from pyspark.sql.functions import col, hour
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
+DEFAULT_INPUT_PATH = "/Volumes/workspace/default/msbd5003_data/raw/train.csv"
+DEFAULT_OUTPUT_PATH = "/Volumes/workspace/default/msbd5003_data/processed/preprocessed_data_full"
 
 # TEST_MODE = True  # True: 测试模式 (截取少量数据) / False: 全量模式
 TEST_MODE = False
@@ -20,34 +23,42 @@ def resolve_project_path(path_value):
     return path
 
 
-def preprocess_data(input_path):
+def build_argument_parser():
+    parser = argparse.ArgumentParser(description="Preprocess NYC taxi data for clustering.")
+    parser.add_argument("--input", default=DEFAULT_INPUT_PATH, help="Path to the raw CSV input.")
+    parser.add_argument(
+        "--output",
+        default=DEFAULT_OUTPUT_PATH,
+        help="Directory where the preprocessed Pickle RDD should be written.",
+    )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="Limit the input to 1000 rows for quick validation runs.",
+    )
+    return parser
+
+
+def preprocess_data(input_path, output_path=None, test_mode=TEST_MODE):
     input_path = resolve_project_path(input_path)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = resolve_project_path(output_path or DEFAULT_OUTPUT_PATH)
+
+    if not output_path.is_absolute():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 1. 初始化 Spark Session
-    builder = SparkSession.builder.appName("NYC_Taxi_Clustering_Preprocess")
+    spark = SparkSession.builder.appName("NYC_Taxi_Clustering_Preprocess").getOrCreate()
 
-    if TEST_MODE:
-        builder = builder.master("local[4]") \
-                         .config("spark.driver.memory", "4g")
+    if test_mode:
         print(">>> [环境] 当前为 TEST_MODE: 限制资源 (4核, 4G) <<<")
     else:
-        # 全量单机模式：调用服务器的强大算力
-        # 使用 16 个核心，分配 16GB 内存（对这台 400GB 的机器来说依然很安全）
-        builder = builder.master("local[16]") \
-                         .config("spark.driver.memory", "16g") \
-                         .config("spark.executor.memory", "16g") \
-                         .config("spark.memory.offHeap.enabled", "true") \
-                         .config("spark.memory.offHeap.size", "4g")
-        print(">>> [环境] 当前为 FULL_MODE: 分配较高资源 (16核, 16G) 处理全量数据 <<<")
-
-    spark = builder.getOrCreate()
+        print(">>> [环境] 当前为 FULL_MODE: 使用当前 Spark 集群配置处理全量数据 <<<")
 
     # 2. 读取原始数据
     df = spark.read.csv(str(input_path), header=True, inferSchema=True)
 
     # 根据测试开关截取数据
-    if TEST_MODE:
+    if test_mode:
         df = df.limit(1000)
         print(">>> [数据] TEST_MODE 开启: 仅截取前 1000 条原始数据 <<<")
 
@@ -92,20 +103,18 @@ def preprocess_data(input_path):
     print(f">>> [完成] 预处理结束！有效数据记录数: {valid_count} 条。 <<<")
 
     # 7. 动态落盘保存 (为 K-Means 算法做准备)
-    output_dir_name = "preprocessed_data_test" if TEST_MODE else "preprocessed_data_full"
-    output_dir = DATA_DIR / output_dir_name
-
     # Spark 保存文件时要求目标目录必须不存在,否则报错。因此先进行清理。
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-        print(f">>> [清理] 发现同名旧目录，已删除: {output_dir}")
+    if output_path.exists():
+        shutil.rmtree(output_path)
+        print(f">>> [清理] 发现同名旧目录，已删除: {output_path}")
 
     # 将 RDD 序列化为 Pickle 格式保存 (支持 Numpy 数组)
-    final_rdd.saveAsPickleFile(str(output_dir))
-    print(f">>> [持久化] 数据已成功保存至目录: {output_dir}")
+    final_rdd.saveAsPickleFile(str(output_path))
+    print(f">>> [持久化] 数据已成功保存至目录: {output_path}")
 
     return final_rdd
 
 
 if __name__ == "__main__":
-    preprocess_data("data/train.csv")
+    args = build_argument_parser().parse_args()
+    preprocess_data(args.input, output_path=args.output, test_mode=args.test_mode)
