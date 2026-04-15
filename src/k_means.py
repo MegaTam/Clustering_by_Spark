@@ -29,10 +29,9 @@ def closest_centroid(point, centroids):
 def run_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4):
     sc = spark.sparkContext
     data_path = resolve_project_path(data_path)
-
     # 1. 读取 Pickle 格式的 RDD
     # 格式为: (id, np.array([lon, lat]))
-    print(">>> 正在加载预处理后的数据...")
+    print(" [数据] 正在加载预处理后的数据... [数据] ")
     data_rdd = sc.pickleFile(str(data_path))
 
     # 仅提取特征向量用于聚类计算，格式为: np.array([lon, lat])
@@ -40,16 +39,14 @@ def run_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4):
 
     # 2. 随机初始化质心 (在 Driver 端进行)
     # takeSample 动作会从集群中拉取样本到本地内存
-    print(f">>> 随机初始化 {k} 个质心...")
+    print(f" [初始化] 随机初始化 {k} 个质心... [初始化] ")
     centroids = features_rdd.takeSample(False, k, seed=42)
 
     for i in range(max_iterations):
         start_time = time.time()
-
         # 3. 广播当前质心到所有 Worker 节点
-        # 这一步极其重要，避免了大量的网络传输开销
         bc_centroids = sc.broadcast(centroids)
-
+        
         # 4. Map 阶段：计算每个点所属的质心
         mapped_rdd = features_rdd.map(
             lambda x: (closest_centroid(x, bc_centroids.value), (x, 1))
@@ -74,10 +71,10 @@ def run_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4):
         centroids = new_centroids
 
         end_time = time.time()
-        print(f"Iteration {i + 1} completed in {end_time - start_time:.2f}s, centroid shift: {shift:.6f}")
+        print(f" [迭代] Iteration {i + 1} completed in {end_time - start_time:.2f}s, centroid shift: {shift:.6f} [迭代] ")
 
         if shift < tol:
-            print(">>> 模型已收敛！")
+            print(" [收敛] 模型已收敛！ [收敛] ")
             break
 
     return centroids
@@ -95,8 +92,8 @@ if __name__ == "__main__":
         max_iterations=20
     )
 
-    print("\n>>> 最终质心坐标:")
+    print("\n [结果] 最终质心坐标:")
     for idx, c in enumerate(final_centroids):
-        print(f"Cluster {idx}: {c}")
+        print(f" [结果] Cluster {idx}: {c} [结果] ")
 
     spark.stop()

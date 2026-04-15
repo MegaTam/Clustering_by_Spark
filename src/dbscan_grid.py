@@ -111,7 +111,7 @@ class UnionFind:
 def run_distributed_dbscan(spark, data_path, eps=0.02, min_pts=10):
     sc = spark.sparkContext
     data_path = resolve_project_path(data_path)
-    print(">>> 正在加载数据并准备网格划分...")
+    print(" [数据] 正在加载数据并准备网格划分 [数据] ")
 
     # data_rdd 格式: (id, np.array([lon, lat]))
     data_rdd = sc.pickleFile(str(data_path)).cache()
@@ -123,43 +123,49 @@ def run_distributed_dbscan(spark, data_path, eps=0.02, min_pts=10):
     bc_eps = sc.broadcast(eps)
     bc_lon_min = sc.broadcast(lon_min)
     bc_lat_min = sc.broadcast(lat_min)
+    
+    # 引入网格大小(cell_size)。将其设为 eps 的倍数(如 5 倍)，可以大幅减少幽灵点的复制量
+    cell_size = eps * 5
+    bc_cell_size = sc.broadcast(cell_size)
 
     # 2. 映射阶段 (Map/FlatMap): 分配网格与幽灵点
     def assign_to_grids(record):
         pid, coords = record
         lon, lat = coords
         e = bc_eps.value
+        c_size = bc_cell_size.value
         l_min = bc_lon_min.value
         la_min = bc_lat_min.value
 
         # 计算主网格坐标
-        cx = int((lon - l_min) / e)
-        cy = int((lat - la_min) / e)
+        cx = int((lon - l_min) / c_size)
+        cy = int((lat - la_min) / c_size)
 
         emissions = []
         # 主网格记录 (is_core = True)
         emissions.append(((cx, cy), (pid, coords, True)))
 
-        # 幽灵点判断逻辑 (检查距离上下左右边界是否小于 eps)
-        # 注意：为了简化，这里使用正方形网格。如果是对角线范围，还需要发送到四个角网格
-        x_offset = (lon - l_min) % e
-        y_offset = (lat - la_min) % e
+        # 幽灵点判断逻辑：只有距离网格边界小于 eps 的点，才需要作为幽灵点发送给相邻网格
+        x_offset = (lon - l_min) % c_size
+        y_offset = (lat - la_min) % c_size
 
         send_left = x_offset < e
-        send_right = (e - x_offset) < e
+        send_right = (c_size - x_offset) < e
         send_bottom = y_offset < e
-        send_top = (e - y_offset) < e
+        send_top = (c_size - y_offset) < e
 
-        # 防止局部变量未使用告警，同时保留原作者的思考痕迹。
-        _ = (send_left, send_right, send_bottom, send_top)
-
-        # 为了保证绝对连通，将点发送到周围 8 个邻居网格 (极度严谨的做法)
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                if dx == 0 and dy == 0:
-                    continue
-                # 简化实现：所有点都作为幽灵点发向周围网格。由于距离计算过滤，只有真正的邻居会被利用
-                emissions.append(((cx + dx, cy + dy), (pid, coords, False)))
+        neighbors = []
+        if send_left: neighbors.append((-1, 0))
+        if send_right: neighbors.append((1, 0))
+        if send_bottom: neighbors.append((0, -1))
+        if send_top: neighbors.append((0, 1))
+        if send_left and send_bottom: neighbors.append((-1, -1))
+        if send_left and send_top: neighbors.append((-1, 1))
+        if send_right and send_bottom: neighbors.append((1, -1))
+        if send_right and send_top: neighbors.append((1, 1))
+        
+        for dx, dy in neighbors:
+            emissions.append(((cx + dx, cy + dy), (pid, coords, False)))
 
         return emissions
 
@@ -168,20 +174,20 @@ def run_distributed_dbscan(spark, data_path, eps=0.02, min_pts=10):
     grid_rdd = data_rdd.flatMap(assign_to_grids)
 
     # 3. 局部聚类阶段 (GroupByKey)
-    print(">>> 正在执行局部 DBSCAN 聚类...")
+    print(" [聚类] 正在执行局部 DBSCAN 聚类 [聚类] ")
     local_clusters_rdd = grid_rdd.groupByKey().flatMap(
         lambda x: local_dbscan(x[0], x[1], bc_eps.value, min_pts)
     )
     local_clusters_rdd.cache()
 
     # 4. 全局合并阶段 (Driver 端计算并查集)
-    print(">>> 正在抽取跨网格簇连通图...")
+    print(" [合并] 正在抽取跨网格簇连通图 [合并] ")
     overlapping_clusters = local_clusters_rdd.groupByKey() \
                                              .mapValues(list) \
                                              .filter(lambda x: len(set(x[1])) > 1) \
                                              .collect()
 
-    print(">>> 正在构建并查集进行全局合并...")
+    print(" [合并] 正在构建并查集进行全局合并 [合并] ")
     uf = UnionFind()
     for pid, cluster_list in overlapping_clusters:
         unique_clusters = list(set(cluster_list))
@@ -198,7 +204,7 @@ def run_distributed_dbscan(spark, data_path, eps=0.02, min_pts=10):
     bc_cluster_mapping = sc.broadcast(cluster_mapping)
 
     # 5. 映射最终结果
-    print(">>> 正在生成最终的全局聚类结果...")
+    print(" [结果] 正在生成最终的全局聚类结果 [结果] ")
 
     def map_to_global_cluster(record):
         pid, local_cid = record
@@ -226,8 +232,8 @@ if __name__ == "__main__":
     cluster_counts = final_rdd.map(lambda x: (x[1], 1)).reduceByKey(lambda a, b: a + b).collect()
     cluster_counts.sort(key=lambda x: x[1], reverse=True)
 
-    print("\n>>> 分布式 DBSCAN 聚类结果统计 (Top 10 簇):")
+    print("\n [结果] 分布式 DBSCAN 聚类结果统计 (Top 10 簇):")
     for cid, count in cluster_counts[:10]:
-        print(f"Cluster ID: {cid}, 包含数据点: {count}")
+        print(f" [结果] Cluster ID: {cid}, 包含数据点: {count}")
 
     spark.stop()

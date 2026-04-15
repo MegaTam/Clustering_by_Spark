@@ -156,9 +156,11 @@ def run_elkan_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4):
         new_centroids_data = reduced_rdd.mapValues(lambda val: val[0] / val[1]).collect()
 
         # 生成新的质心列表
-        new_centroids = np.zeros_like(centroids)
-        for idx, vec in new_centroids_data:
-            new_centroids[idx] = vec
+        # 创建一个新质心的映射字典
+        new_centroids_map = {idx: vec for idx, vec in new_centroids_data}
+        # 如果某个簇变为空，则其质心保持在上一轮的位置，而不是变为 [0,0]
+        # 这提高了算法的稳健性
+        new_centroids = np.array([new_centroids_map.get(j, centroids[j]) for j in range(k)])
 
         # 4. 计算质心偏移量 Shift
         centroid_shifts = [np.linalg.norm(centroids[j] - new_centroids[j]) for j in range(k)]

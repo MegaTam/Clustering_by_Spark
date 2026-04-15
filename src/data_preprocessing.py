@@ -30,26 +30,24 @@ def preprocess_data(input_path):
     if TEST_MODE:
         builder = builder.master("local[4]") \
                          .config("spark.driver.memory", "4g")
-        print(">>> [环境] 当前为 TEST_MODE: 限制资源 (4核, 4G) <<<")
+        print(" [环境] 当前为 TEST_MODE: 限制资源 (4核, 4G) [环境] ")
     else:
-        # 全量单机模式：调用服务器的强大算力
-        # 使用 16 个核心，分配 16GB 内存（对这台 400GB 的机器来说依然很安全）
+        # 全量单机模式配置: 使用 16 个核心, 分配 16GB 内存给 Driver 和 Executor, 并启用 Off-Heap 内存以提升性能
         builder = builder.master("local[16]") \
                          .config("spark.driver.memory", "16g") \
                          .config("spark.executor.memory", "16g") \
                          .config("spark.memory.offHeap.enabled", "true") \
                          .config("spark.memory.offHeap.size", "4g")
-        print(">>> [环境] 当前为 FULL_MODE: 分配较高资源 (16核, 16G) 处理全量数据 <<<")
+        print(" [环境] 当前为 FULL_MODE: 分配较高资源, 处理全量数据 [环境] ")
 
     spark = builder.getOrCreate()
 
     # 2. 读取原始数据
     df = spark.read.csv(str(input_path), header=True, inferSchema=True)
-
-    # 根据测试开关截取数据
+    # 若在测试模式下, 仅截取前 1000 条数据进行处理, 加快迭代速度
     if TEST_MODE:
         df = df.limit(1000)
-        print(">>> [数据] TEST_MODE 开启: 仅截取前 1000 条原始数据 <<<")
+        print(" [数据] TEST_MODE 开启: 仅截取前 1000 条原始数据 [数据] ")
 
     # 3. 数据清洗 (过滤异常经纬度)
     cleaned_df = df.filter(
@@ -89,20 +87,20 @@ def preprocess_data(input_path):
     final_rdd.cache()
 
     valid_count = final_rdd.count()
-    print(f">>> [完成] 预处理结束！有效数据记录数: {valid_count} 条。 <<<")
+    print(f" [完成] 预处理结束！有效数据记录数: {valid_count} 条 [完成] ")
 
-    # 7. 动态落盘保存 (为 K-Means 算法做准备)
+    # 7. 动态落盘保存 (为聚类算法做准备)
     output_dir_name = "preprocessed_data_test" if TEST_MODE else "preprocessed_data_full"
     output_dir = DATA_DIR / output_dir_name
 
     # Spark 保存文件时要求目标目录必须不存在,否则报错。因此先进行清理。
     if output_dir.exists():
         shutil.rmtree(output_dir)
-        print(f">>> [清理] 发现同名旧目录，已删除: {output_dir}")
+        print(f" [清理] 发现同名旧目录，已删除: {output_dir} [清理] ")
 
     # 将 RDD 序列化为 Pickle 格式保存 (支持 Numpy 数组)
     final_rdd.saveAsPickleFile(str(output_dir))
-    print(f">>> [持久化] 数据已成功保存至目录: {output_dir}")
+    print(f" [持久化] 数据已成功保存至目录: {output_dir} [持久化] ")
 
     return final_rdd
 
