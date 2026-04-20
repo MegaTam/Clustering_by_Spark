@@ -5,9 +5,13 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-
+data
 data/preprocessed_data_test/
 data/preprocessed_data_full/
+dbscan_clusters_parquet_100k
+elkan_kmeans_centroids_json_100k
+kmeans_centroids_json_100k
+spark_ml_kmeans_100k_k11
 
 *.csv
 *.out

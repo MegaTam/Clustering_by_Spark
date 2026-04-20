@@ -20,11 +20,28 @@ DEFAULT_INPUT_PATH = "/Volumes/workspace/default/msbd5003_data/processed/preproc
 DEFAULT_OUTPUT_PATH = "/Volumes/workspace/default/msbd5003_data/results/elkan_kmeans_centroids_json"
 
 
-def resolve_project_path(path_value):
-    path = Path(path_value)
+def is_uri_path(path_value):
+    return "://" in str(path_value)
+
+
+def resolve_local_path(path_value):
+    path_str = str(path_value)
+    if is_uri_path(path_str):
+        return None
+
+    path = Path(path_str)
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path
+
+
+def resolve_spark_path(path_value):
+    path_str = str(path_value)
+    if is_uri_path(path_str):
+        return path_str
+
+    local_path = resolve_local_path(path_str)
+    return local_path.as_uri()
 
 
 def build_argument_parser():
@@ -34,7 +51,31 @@ def build_argument_parser():
     parser.add_argument("--k", type=int, default=5, help="Number of clusters.")
     parser.add_argument("--max-iterations", type=int, default=20, help="Maximum number of iterations.")
     parser.add_argument("--tol", type=float, default=1e-4, help="Convergence tolerance.")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only use the first N preprocessed records for clustering.",
+    )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="Only use the first 1000 preprocessed records for a quick validation run.",
+    )
     return parser
+
+
+def limit_preprocessed_rdd(sc, data_rdd, limit=None, test_mode=False):
+    effective_limit = 1000 if test_mode and limit is None else limit
+    if effective_limit is None:
+        return data_rdd
+    if effective_limit <= 0:
+        raise ValueError("--limit must be a positive integer")
+
+    limited_records = data_rdd.take(effective_limit)
+    num_slices = max(1, min(sc.defaultParallelism, max(1, len(limited_records) // 1000)))
+    print(f">>> [数据] 当前仅使用前 {len(limited_records)} 条预处理记录进行 Elkan K-Means 聚类。")
+    return sc.parallelize(limited_records, numSlices=num_slices)
 
 
 def compute_centroid_distances(centroids):
@@ -139,11 +180,12 @@ def update_bounds_logic(row, bc_centroid_shifts):
     return (id_val, x, c_x, u_x, l_x)
 
 
-def run_elkan_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4):
+def run_elkan_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4, limit=None, test_mode=False):
     sc = spark.sparkContext
-    data_path = resolve_project_path(data_path)
+    data_path = resolve_spark_path(data_path)
     print(">>> 正在加载数据并初始化 Elkan 状态...")
-    data_rdd = sc.pickleFile(str(data_path)).cache()
+    data_rdd = sc.pickleFile(data_path).cache()
+    data_rdd = limit_preprocessed_rdd(sc, data_rdd, limit=limit, test_mode=test_mode).cache()
 
     centroids = data_rdd.map(lambda x: x[1]).takeSample(False, k, seed=42)
 
@@ -207,13 +249,13 @@ def run_elkan_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4):
 
 
 def save_centroids(spark, centroids, output_path):
-    output_path = resolve_project_path(output_path)
+    output_path = resolve_spark_path(output_path)
     rows = [
         Row(cluster_id=int(idx), centroid=json.dumps(np.asarray(centroid).tolist()))
         for idx, centroid in enumerate(centroids)
     ]
     centroid_df = spark.createDataFrame(rows)
-    centroid_df.write.mode("overwrite").json(str(output_path))
+    centroid_df.write.mode("overwrite").json(output_path)
     print(f">>> 已将 Elkan K-Means 质心保存到: {output_path}")
 
 
@@ -226,6 +268,8 @@ if __name__ == "__main__":
         k=args.k,
         max_iterations=args.max_iterations,
         tol=args.tol,
+        limit=args.limit,
+        test_mode=args.test_mode,
     )
     print("\n>>> Elkan 最终质心:")
     for idx, c in enumerate(final_centroids):

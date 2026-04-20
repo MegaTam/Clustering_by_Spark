@@ -1,6 +1,5 @@
 import argparse
 from pathlib import Path
-import shutil
 
 import numpy as np
 from pyspark.sql import SparkSession
@@ -23,11 +22,62 @@ DEFAULT_OUTPUT_PATH = "/Volumes/workspace/default/msbd5003_data/processed/prepro
 TEST_MODE = False
 
 
-def resolve_project_path(path_value):
-    path = Path(path_value)
+def is_uri_path(path_value):
+    return "://" in str(path_value)
+
+
+def resolve_local_path(path_value):
+    path_str = str(path_value)
+    if is_uri_path(path_str):
+        return None
+
+    path = Path(path_str)
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path
+
+
+def resolve_spark_path(path_value):
+    path_str = str(path_value)
+    if is_uri_path(path_str):
+        return path_str
+
+    local_path = resolve_local_path(path_str)
+    return local_path.as_uri()
+
+
+def delete_output_path_if_exists(spark, path_value):
+    spark_path = resolve_spark_path(path_value)
+    sc = spark.sparkContext
+    hadoop_conf = sc._jsc.hadoopConfiguration()
+    jvm = sc._jvm
+    output_path = jvm.org.apache.hadoop.fs.Path(spark_path)
+    fs = output_path.getFileSystem(hadoop_conf)
+
+    if fs.exists(output_path):
+        fs.delete(output_path, True)
+        print(f">>> [清理] 发现同名旧目录，已删除: {spark_path}")
+
+
+def default_scaler_output_path(output_path):
+    output_str = str(output_path)
+    if output_str.endswith("/"):
+        output_str = output_str.rstrip("/")
+    return f"{output_str}_scaler_json"
+
+
+def save_scaler_metadata(spark, scaler_output_path, min_vals, max_vals):
+    scaler_output_path = resolve_spark_path(scaler_output_path)
+    delete_output_path_if_exists(spark, scaler_output_path)
+
+    scaler_df = spark.createDataFrame([
+        {
+            "min_vals": [float(v) for v in np.asarray(min_vals).tolist()],
+            "max_vals": [float(v) for v in np.asarray(max_vals).tolist()],
+        }
+    ])
+    scaler_df.write.mode("overwrite").json(scaler_output_path)
+    print(f">>> [持久化] 归一化参数已保存至目录: {scaler_output_path}")
 
 
 def build_argument_parser():
@@ -43,15 +93,23 @@ def build_argument_parser():
         action="store_true",
         help="Limit the input to 1000 rows for quick validation runs.",
     )
+    parser.add_argument(
+        "--scaler-output",
+        default=None,
+        help="Directory where the Min-Max scaler metadata should be written.",
+    )
     return parser
 
 
-def preprocess_data(input_path, output_path=None, test_mode=TEST_MODE):
-    input_path = resolve_project_path(input_path)
-    output_path = resolve_project_path(output_path or DEFAULT_OUTPUT_PATH)
+def preprocess_data(input_path, output_path=None, scaler_output_path=None, test_mode=TEST_MODE):
+    input_path = resolve_spark_path(input_path)
+    output_path = output_path or DEFAULT_OUTPUT_PATH
+    spark_output_path = resolve_spark_path(output_path)
+    local_output_path = resolve_local_path(output_path)
+    scaler_output_path = scaler_output_path or default_scaler_output_path(output_path)
 
-    if not output_path.is_absolute():
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+    if local_output_path is not None:
+        local_output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 1. 初始化 Spark Session
     spark = SparkSession.builder.appName("NYC_Taxi_Clustering_Preprocess").getOrCreate()
@@ -62,7 +120,7 @@ def preprocess_data(input_path, output_path=None, test_mode=TEST_MODE):
         print(">>> [环境] 当前为 FULL_MODE: 使用当前 Spark 集群配置处理全量数据 <<<")
 
     # 2. 读取原始数据
-    df = spark.read.csv(str(input_path), header=True, inferSchema=True)
+    df = spark.read.csv(input_path, header=True, inferSchema=True)
 
     # 根据测试开关截取数据
     if test_mode:
@@ -111,17 +169,21 @@ def preprocess_data(input_path, output_path=None, test_mode=TEST_MODE):
 
     # 7. 动态落盘保存 (为 K-Means 算法做准备)
     # Spark 保存文件时要求目标目录必须不存在,否则报错。因此先进行清理。
-    if output_path.exists():
-        shutil.rmtree(output_path)
-        print(f">>> [清理] 发现同名旧目录，已删除: {output_path}")
+    delete_output_path_if_exists(spark, output_path)
 
     # 将 RDD 序列化为 Pickle 格式保存 (支持 Numpy 数组)
-    final_rdd.saveAsPickleFile(str(output_path))
-    print(f">>> [持久化] 数据已成功保存至目录: {output_path}")
+    final_rdd.saveAsPickleFile(spark_output_path)
+    print(f">>> [持久化] 数据已成功保存至目录: {spark_output_path}")
+    save_scaler_metadata(spark, scaler_output_path, min_vals, max_vals)
 
     return final_rdd
 
 
 if __name__ == "__main__":
     args = build_argument_parser().parse_args()
-    preprocess_data(args.input, output_path=args.output, test_mode=args.test_mode)
+    preprocess_data(
+        args.input,
+        output_path=args.output,
+        scaler_output_path=args.scaler_output,
+        test_mode=args.test_mode,
+    )
