@@ -38,6 +38,8 @@ uv run python src/dbscan_grid.py
 
 Using `uv run` is recommended so everyone on the team runs the project with the same Python version and dependencies.
 
+All scripts also accept explicit input and output paths, which is useful when running on Databricks or other shared storage setups.
+
 ## Structure
 
 - `src/`: Python source files
@@ -53,6 +55,15 @@ uv run python src/data_preprocessing.py
 uv run python src/k_means.py
 uv run python src/elkan_k_means.py
 uv run python src/dbscan_grid.py
+```
+
+Example with explicit local paths:
+
+```bash
+uv run python src/data_preprocessing.py --input data/train.csv --output data/preprocessed_data_full
+uv run python src/k_means.py --input data/preprocessed_data_full --output data/results/kmeans_centroids_json
+uv run python src/elkan_k_means.py --input data/preprocessed_data_full --output data/results/elkan_kmeans_centroids_json
+uv run python src/dbscan_grid.py --input data/preprocessed_data_full --output data/results/dbscan_clusters_parquet
 ```
 
 Expected data layout:
@@ -75,6 +86,46 @@ sbatch scripts/k_means_pseudo_distributed.slurm
 sbatch scripts/elkan_k_means_pseudo_distributed.slurm
 sbatch scripts/dbscan_pseudo_distributed.slurm
 ```
+
+## Run on Databricks
+
+Recommended layout:
+
+```text
+Workspace code:
+  /Workspace/Users/theochengworkinginbox@gmail.com/Clustering_by_Spark
+
+Unity Catalog volume data:
+  /Volumes/workspace/default/msbd5003_data/raw/train.csv
+  /Volumes/workspace/default/msbd5003_data/processed/preprocessed_data_full
+  /Volumes/workspace/default/msbd5003_data/results/
+```
+
+The scripts now default to Databricks-friendly volume paths, so they can be used directly in Databricks Jobs:
+
+```bash
+python src/data_preprocessing.py \
+  --input /Volumes/workspace/default/msbd5003_data/raw/train.csv \
+  --output /Volumes/workspace/default/msbd5003_data/processed/preprocessed_data_full
+
+python src/k_means.py \
+  --input /Volumes/workspace/default/msbd5003_data/processed/preprocessed_data_full \
+  --output /Volumes/workspace/default/msbd5003_data/results/kmeans_centroids_json
+
+python src/elkan_k_means.py \
+  --input /Volumes/workspace/default/msbd5003_data/processed/preprocessed_data_full \
+  --output /Volumes/workspace/default/msbd5003_data/results/elkan_kmeans_centroids_json
+
+python src/dbscan_grid.py \
+  --input /Volumes/workspace/default/msbd5003_data/processed/preprocessed_data_full \
+  --output /Volumes/workspace/default/msbd5003_data/results/dbscan_clusters_parquet
+```
+
+Notes:
+
+- Do not set `master("local[*]")` on Databricks; the cluster configuration should be used as-is.
+- Store large inputs and outputs in Unity Catalog volumes instead of the workspace filesystem.
+- The preprocessing output directory and clustering result directories will be created by Spark when the jobs run.
 
 ## Main dependencies
 
