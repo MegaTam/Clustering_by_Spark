@@ -1,6 +1,6 @@
 # Clustering_by_Spark
 
-PySpark clustering project for preprocessing taxi data and running K-Means, Elkan K-Means, and DBSCAN experiments.
+PySpark clustering project for preprocessing taxi data and running K-Means, Elkan K-Means, and DBSCAN experiments. We did not invoke the existing built-in algorithms of PySpark, but instead implemented the above algorithm from the very basics.
 
 ## Environment
 
