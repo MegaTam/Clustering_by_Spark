@@ -1,18 +1,81 @@
+import argparse
+import json
 from pathlib import Path
 import time
 
 import numpy as np
+from pyspark.sql import Row
 from pyspark.sql import SparkSession
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+def get_project_root():
+    file_path = globals().get("__file__")
+    if file_path:
+        return Path(file_path).resolve().parent.parent
+    return Path("/Workspace/Users/theochengworkinginbox@gmail.com/Clustering_by_Spark")
 
 
-def resolve_project_path(path_value):
-    path = Path(path_value)
+PROJECT_ROOT = get_project_root()
+DEFAULT_INPUT_PATH = "/Volumes/workspace/default/msbd5003_data/processed/preprocessed_data_full"
+DEFAULT_OUTPUT_PATH = "/Volumes/workspace/default/msbd5003_data/results/kmeans_centroids_json"
+
+
+def is_uri_path(path_value):
+    return "://" in str(path_value)
+
+
+def resolve_local_path(path_value):
+    path_str = str(path_value)
+    if is_uri_path(path_str):
+        return None
+
+    path = Path(path_str)
     if not path.is_absolute():
         path = PROJECT_ROOT / path
     return path
+
+
+def resolve_spark_path(path_value):
+    path_str = str(path_value)
+    if is_uri_path(path_str):
+        return path_str
+
+    local_path = resolve_local_path(path_str)
+    return local_path.as_uri()
+
+
+def build_argument_parser():
+    parser = argparse.ArgumentParser(description="Run K-Means clustering on preprocessed data.")
+    parser.add_argument("--input", default=DEFAULT_INPUT_PATH, help="Path to the preprocessed Pickle RDD.")
+    parser.add_argument("--output", default=DEFAULT_OUTPUT_PATH, help="Directory for centroid outputs.")
+    parser.add_argument("--k", type=int, default=5, help="Number of clusters.")
+    parser.add_argument("--max-iterations", type=int, default=20, help="Maximum number of iterations.")
+    parser.add_argument("--tol", type=float, default=1e-4, help="Convergence tolerance.")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only use the first N preprocessed records for clustering.",
+    )
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="Only use the first 1000 preprocessed records for a quick validation run.",
+    )
+    return parser
+
+
+def limit_preprocessed_rdd(sc, data_rdd, limit=None, test_mode=False):
+    effective_limit = 1000 if test_mode and limit is None else limit
+    if effective_limit is None:
+        return data_rdd
+    if effective_limit <= 0:
+        raise ValueError("--limit must be a positive integer")
+
+    limited_records = data_rdd.take(effective_limit)
+    num_slices = max(1, min(sc.defaultParallelism, max(1, len(limited_records) // 1000)))
+    print(f">>> [数据] 当前仅使用前 {len(limited_records)} 条预处理记录进行 K-Means 聚类。")
+    return sc.parallelize(limited_records, numSlices=num_slices)
 
 
 def euclidean_distance(point, centroid):
@@ -26,27 +89,31 @@ def closest_centroid(point, centroids):
     return np.argmin(distances)
 
 
-def run_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4):
+def run_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4, limit=None, test_mode=False):
     sc = spark.sparkContext
-    data_path = resolve_project_path(data_path)
+    data_path = resolve_spark_path(data_path)
+
     # 1. 读取 Pickle 格式的 RDD
     # 格式为: (id, np.array([lon, lat]))
-    print(" [数据] 正在加载预处理后的数据... [数据] ")
-    data_rdd = sc.pickleFile(str(data_path))
+    print(">>> 正在加载预处理后的数据...")
+    data_rdd = sc.pickleFile(data_path)
+    data_rdd = limit_preprocessed_rdd(sc, data_rdd, limit=limit, test_mode=test_mode)
 
     # 仅提取特征向量用于聚类计算，格式为: np.array([lon, lat])
     features_rdd = data_rdd.map(lambda x: x[1]).cache()
 
     # 2. 随机初始化质心 (在 Driver 端进行)
     # takeSample 动作会从集群中拉取样本到本地内存
-    print(f" [初始化] 随机初始化 {k} 个质心... [初始化] ")
+    print(f">>> 随机初始化 {k} 个质心...")
     centroids = features_rdd.takeSample(False, k, seed=42)
 
     for i in range(max_iterations):
         start_time = time.time()
+
         # 3. 广播当前质心到所有 Worker 节点
+        # 这一步极其重要，避免了大量的网络传输开销
         bc_centroids = sc.broadcast(centroids)
-        
+
         # 4. Map 阶段：计算每个点所属的质心
         mapped_rdd = features_rdd.map(
             lambda x: (closest_centroid(x, bc_centroids.value), (x, 1))
@@ -71,29 +138,43 @@ def run_kmeans(spark, data_path, k=5, max_iterations=20, tol=1e-4):
         centroids = new_centroids
 
         end_time = time.time()
-        print(f" [迭代] Iteration {i + 1} completed in {end_time - start_time:.2f}s, centroid shift: {shift:.6f} [迭代] ")
+        print(f"Iteration {i + 1} completed in {end_time - start_time:.2f}s, centroid shift: {shift:.6f}")
 
         if shift < tol:
-            print(" [收敛] 模型已收敛！ [收敛] ")
+            print(">>> 模型已收敛！")
             break
 
     return centroids
 
 
+def save_centroids(spark, centroids, output_path):
+    output_path = resolve_spark_path(output_path)
+    rows = [
+        Row(cluster_id=int(idx), centroid=json.dumps(np.asarray(centroid).tolist()))
+        for idx, centroid in enumerate(centroids)
+    ]
+    centroid_df = spark.createDataFrame(rows)
+    centroid_df.write.mode("overwrite").json(output_path)
+    print(f">>> 已将 K-Means 质心保存到: {output_path}")
+
+
 if __name__ == "__main__":
-    spark = SparkSession.builder \
-        .appName("Standard_KMeans_From_Scratch") \
-        .getOrCreate()
+    args = build_argument_parser().parse_args()
+    spark = SparkSession.builder.appName("Standard_KMeans_From_Scratch").getOrCreate()
 
     final_centroids = run_kmeans(
         spark,
-        data_path="data/preprocessed_data_test",
-        k=5,
-        max_iterations=20
+        data_path=args.input,
+        k=args.k,
+        max_iterations=args.max_iterations,
+        tol=args.tol,
+        limit=args.limit,
+        test_mode=args.test_mode,
     )
 
-    print("\n [结果] 最终质心坐标:")
+    print("\n>>> 最终质心坐标:")
     for idx, c in enumerate(final_centroids):
-        print(f" [结果] Cluster {idx}: {c} [结果] ")
+        print(f"Cluster {idx}: {c}")
 
+    save_centroids(spark, final_centroids, args.output)
     spark.stop()
