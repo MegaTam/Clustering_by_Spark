@@ -1,0 +1,15 @@
+{
+  "name" : "org.apache.hadoop.fs.oss.commit.files.SuccessData/1",
+  "timestamp" : 1776687260034,
+  "date" : "Mon Apr 20 20:14:20 CST 2026",
+  "hostname" : "jr-45c365d9b7a596e7",
+  "committer" : "magic",
+  "description" : "Task committer attempt_20260420201417483343044519430071_0000_m_000000_0",
+  "jobId" : "8353fd5d-9286-4301-ba37-b321c302fb82",
+  "jobIdSource" : "spark.sql.sources.writeJobUUID",
+  "metrics" : { },
+  "diagnostics" : {
+    "fs.oss.committer.type" : "magic"
+  },
+  "filenames" : [ "/clustering/results/spark_ml_kmeans_100k_k11/assignments_parquet/part-00001-7cbfd054-3447-4841-b8c8-ffbb921a1964-c000.snappy.parquet", "/clustering/results/spark_ml_kmeans_100k_k11/assignments_parquet/part-00000-7cbfd054-3447-4841-b8c8-ffbb921a1964-c000.snappy.parquet" ]
+}
